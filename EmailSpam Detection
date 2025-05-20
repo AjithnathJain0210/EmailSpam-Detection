@@ -1,0 +1,161 @@
+import os
+import imaplib
+import email
+from email.header import decode_header
+import tkinter as tk
+from tkinter import ttk
+from tkinter import messagebox
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.pipeline import make_pipeline
+import joblib
+
+MODEL_FILENAME = 'spam_classifier.pkl'
+CSV_FILENAME = 'C:/Users/ajith/OneDrive/Documents/Desktop/spam.csv'
+
+# Step 1: Train the model if not already trained
+def train_model_if_needed():
+    if os.path.exists(MODEL_FILENAME):
+        return  # Model already exists
+    try:
+        df = pd.read_csv(CSV_FILENAME, encoding='latin-1', usecols=[0, 1])
+        df.columns = ['label', 'message']
+        df.dropna(inplace=True)
+        X_train, _, y_train, _ = train_test_split(df['message'], df['label'], test_size=0.2, random_state=42)
+
+        model = make_pipeline(CountVectorizer(), MultinomialNB())
+        model.fit(X_train, y_train)
+
+        joblib.dump(model, MODEL_FILENAME)
+        print("✅ Model trained and saved as spam_classifier.pkl")
+    except Exception as e:
+        print(f"Error training model: {e}")
+        exit()
+
+# Step 2: Load model
+def load_model():
+    return joblib.load(MODEL_FILENAME)
+
+# Step 3: Fetch and classify emails
+def fetch_and_classify():
+    username = email_entry.get()
+    password = password_entry.get()
+
+    try:
+        mail = imaplib.IMAP4_SSL('imap.gmail.com')
+        mail.login(username, password)
+        mail.select('inbox')
+
+        status, messages = mail.search(None, 'ALL')
+        email_ids = messages[0].split()
+
+        # Clear previous results
+        for row in output_table.get_children():
+            output_table.delete(row)
+
+        for i in email_ids[:-5:-1]:  # Limit to last 100 emails for performance
+            res, msg_data = mail.fetch(i, '(RFC822)')
+            for response_part in msg_data:
+                if isinstance(response_part, tuple):
+                    msg = email.message_from_bytes(response_part[1])
+
+                    # Decode subject
+                    subject, encoding = decode_header(msg['Subject'])[0]
+                    if isinstance(subject, bytes):
+                        subject = subject.decode(encoding or 'utf-8', errors='ignore')
+                    subject = subject.strip()
+
+                    # Extract sender email
+                    from_header = msg.get("From")
+                    sender_email = ""
+                    if from_header:
+                        parts = email.utils.parseaddr(from_header)
+                        sender_email = parts[1]
+
+                    # Extract plain text body
+                    body = ""
+                    if msg.is_multipart():
+                        for part in msg.walk():
+                            if part.get_content_type() == "text/plain":
+                                body = part.get_payload(decode=True).decode(errors='ignore')
+                                break
+                    else:
+                        body = msg.get_payload(decode=True).decode(errors='ignore')
+                    body = body.strip()
+
+                    # Predict using email body
+                    prediction = model.predict([body])[0]
+                    classification = "Spam" if prediction.endswith("Sorry") else "Ham"
+
+                    # Insert into table
+                    output_table.insert("", tk.END, values=(subject, sender_email, classification))
+
+        mail.logout()
+
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+
+# Step 4: GUI Setup
+def launch_gui():
+    global email_entry, password_entry, output_table
+
+    def toggle_password():
+        password_entry.config(show="" if show_password_var.get() else "*")
+
+    root = tk.Tk()
+    root.title("📬 Email Spam Classifier")
+    root.geometry("900x600")
+    root.configure(bg="#eaf6f6")
+
+    # Header
+    header = tk.Frame(root, bg="#00adb5", pady=15)
+    header.pack(fill=tk.X)
+    tk.Label(header, text="📬 Email Spam Classifier", font=("Helvetica", 22, "bold"), bg="#00adb5", fg="white").pack()
+
+    # Input section
+    input_frame = tk.Frame(root, bg="#eaf6f6", pady=15)
+    input_frame.pack()
+
+    tk.Label(input_frame, text="📧 Gmail Address:", font=("Helvetica", 12), bg="#eaf6f6").grid(row=0, column=0, padx=10, pady=5, sticky='e')
+    email_entry = tk.Entry(input_frame, font=("Helvetica", 11), width=40)
+    email_entry.grid(row=0, column=1, padx=5, pady=5)
+
+    tk.Label(input_frame, text="🔑 App Password:", font=("Helvetica", 12), bg="#eaf6f6").grid(row=1, column=0, padx=10, pady=5, sticky='e')
+    password_entry = tk.Entry(input_frame, font=("Helvetica", 11), width=40, show="*")
+    password_entry.grid(row=1, column=1, padx=5, pady=5)
+
+    show_password_var = tk.BooleanVar()
+    tk.Checkbutton(input_frame, text="Show Password", variable=show_password_var, command=toggle_password, bg="#eaf6f6", font=("Helvetica", 10)).grid(row=2, column=1, sticky='w')
+
+    # Fetch button
+    tk.Button(root, text="📥 Fetch and Classify Emails", font=("Helvetica", 12, "bold"), bg="#00adb5", fg="white", command=fetch_and_classify).pack(pady=10)
+
+    # Output Table
+    table_frame = tk.Frame(root, bg="white", padx=10, pady=10)
+    table_frame.pack(fill=tk.BOTH, expand=True)
+
+    columns = ("Subject", "Sender", "Classification")
+    output_table = ttk.Treeview(table_frame, columns=columns, show="headings")
+
+    for col in columns:
+        output_table.heading(col, text=col)
+        if col == "Subject":
+            output_table.column(col, width=300)
+        elif col == "Sender":
+            output_table.column(col, width=250)
+        else:
+            output_table.column(col, width=120, anchor='center')
+
+    scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=output_table.yview)
+    output_table.configure(yscrollcommand=scrollbar.set)
+    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+    output_table.pack(fill=tk.BOTH, expand=True)
+
+    root.mainloop()
+
+# Run the app
+train_model_if_needed()
+model = load_model()
+launch_gui()
